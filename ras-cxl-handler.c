@@ -21,6 +21,7 @@
 #include "ras-record.h"
 #include "ras-logger.h"
 #include "ras-report.h"
+#include "ras-scrub-control.h"
 #include <endian.h>
 
 /* Common Functions */
@@ -862,6 +863,31 @@ int ras_cxl_general_media_event_handler(struct trace_seq *s,
 	ras_report_cxl_general_media_event(ras, &ev);
 #endif
 
+#ifdef HAVE_SCRUB_CONTROL
+	/* Report to scrub control only if media event type is media ECC error(00h) */
+	if (ev.type)
+		return 0;
+
+	struct mem_error_info cxl_err_info;
+	time_t now;
+
+	now = record->ts / user_hz + ras->uptime_diff;
+	localtime(&now);
+
+	cxl_err_info.time = now;
+	cxl_err_info.scrub_type = CXL_PATROL;
+	sprintf(cxl_err_info.dev_name, "cxl_%s", ev.hdr.memdev);
+	if (!(ev.descriptor & CXL_GMER_EVT_DESC_UNCORECTABLE_EVENT)) {
+		cxl_err_info.ce_nums = 1;
+		cxl_err_info.err_severity = MEM_CE;
+	} else if (ev.descriptor & CXL_GMER_EVT_DESC_UNCORECTABLE_EVENT) {
+		cxl_err_info.ce_nums = 0;
+		cxl_err_info.err_severity = MEM_UCE;
+	} else
+		return 0;
+
+	ras_scrub_record_mem_error(&cxl_err_info);
+#endif
 	return 0;
 }
 
@@ -1011,6 +1037,32 @@ int ras_cxl_dram_event_handler(struct trace_seq *s,
 #ifdef HAVE_ABRT_REPORT
 	/* Report event to ABRT */
 	ras_report_cxl_dram_event(ras, &ev);
+#endif
+
+#ifdef HAVE_SCRUB_CONTROL
+	/* Report to scrub control only if media event type is media ECC error(00h) */
+	if (ev.type)
+		return 0;
+
+	struct mem_error_info cxl_err_info;
+	time_t now;
+
+	now = record->ts / user_hz + ras->uptime_diff;
+	localtime(&now);
+
+	cxl_err_info.time = now;
+	cxl_err_info.scrub_type = CXL_PATROL;
+	sprintf(cxl_err_info.dev_name, "cxl_%s", ev.hdr.memdev);
+	if (!(ev.descriptor & CXL_GMER_EVT_DESC_UNCORECTABLE_EVENT)) {
+		cxl_err_info.ce_nums = 1;
+		cxl_err_info.err_severity = MEM_CE;
+	} else if (ev.descriptor & CXL_GMER_EVT_DESC_UNCORECTABLE_EVENT) {
+		cxl_err_info.ce_nums = 0;
+		cxl_err_info.err_severity = MEM_UCE;
+	} else
+		return 0;
+
+	ras_scrub_record_mem_error(&cxl_err_info);
 #endif
 
 	return 0;
