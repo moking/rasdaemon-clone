@@ -24,7 +24,7 @@ all-local: $(SYSTEMD_SERVICES)
 
 sbin_PROGRAMS = rasdaemon
 rasdaemon_SOURCES = rasdaemon.c ras-events.c ras-mc-handler.c \
-		    bitfield.c
+		    bitfield.c queue.c
 if WITH_SQLITE3
    rasdaemon_SOURCES += ras-record.c
 endif
@@ -71,7 +71,7 @@ if WITH_AMP_NS_DECODE
    rasdaemon_SOURCES += non-standard-ampere.c
 endif
 if WITH_CPU_FAULT_ISOLATION
-   rasdaemon_SOURCES += ras-cpu-isolation.c queue.c
+   rasdaemon_SOURCES += ras-cpu-isolation.c
 endif
 
 if WITH_CXL
@@ -84,6 +84,10 @@ if WITH_JAGUAR_NS_DECODE
    rasdaemon_SOURCES += non-standard-jaguarmicro.c
 endif
 
+if WITH_SCRUB_CONTROL
+   rasdaemon_SOURCES += ras-scrub-control.c
+endif
+
 rasdaemon_LDADD = -lpthread $(SQLITE3_LIBS) $(LIBTRACEEVENT_LIBS)
 rasdaemon_CFLAGS = $(SQLITE3_CFLAGS) $(LIBTRACEEVENT_CFLAGS)
 
@@ -93,7 +97,7 @@ include_HEADERS = config.h  ras-events.h  ras-logger.h  ras-mc-handler.h \
 		  ras-devlink-handler.h ras-diskerror-handler.h rbtree.h ras-page-isolation.h \
 		  non-standard-hisilicon.h non-standard-ampere.h ras-memory-failure-handler.h \
 		  ras-cxl-handler.h ras-cpu-isolation.h queue.h non-standard-yitian.h \
-		  non-standard-jaguarmicro.h
+		  non-standard-jaguarmicro.h ras-scrub-control.h
 
 # This rule can't be called with more than one Makefile job (like make -j8)
 # I can't figure out a way to fix that

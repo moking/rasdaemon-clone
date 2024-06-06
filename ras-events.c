@@ -45,6 +45,7 @@
 #include "ras-logger.h"
 #include "ras-page-isolation.h"
 #include "ras-cpu-isolation.h"
+#include "ras-scrub-control.h"
 
 /*
  * Polling time, if read() doesn't block. Currently, trace_pipe_raw never
@@ -1114,6 +1115,10 @@ int handle_ras_events(int record_events)
 		    "cxl", "memory_module");
 #endif
 
+#ifdef HAVE_SCRUB_CONTROL
+	ras_scrub_control_init();
+#endif
+
 	if (!num_events) {
 		log(ALL, LOG_INFO,
 		    "Failed to trace all supported RAS events. Aborting.\n");
@@ -1180,6 +1185,10 @@ err:
 	}
 #ifdef HAVE_CPU_FAULT_ISOLATION
 	cpu_infos_free();
+#endif
+
+#ifdef HAVE_SCRUB_CONTROL
+	ras_scrub_control_exit();
 #endif
 	return rc;
 }

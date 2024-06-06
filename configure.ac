@@ -207,6 +207,16 @@ AS_IF([test "x$enable_yitian_ns_decode" = "xyes" || test "x$enable_all" == "xyes
 AM_CONDITIONAL([WITH_YITIAN_NS_DECODE], [test x$enable_yitian_ns_decode = xyes || test x$enable_all == xyes])
 AM_COND_IF([WITH_YITIAN_NS_DECODE], [USE_YITIAN_NS_DECODE="yes"], [USE_YITIAN_NS_DECODE="no"])
 
+AC_ARG_ENABLE([scrub_control],
+    AS_HELP_STRING([--enable-scrub-control], [enable memory scrub control]))
+
+AS_IF([test "x$enable_scrub_control" = "xyes" || test "x$enable_all" = "xyes"], [
+  AC_DEFINE(HAVE_SCRUB_CONTROL,1,"have memory scrub control")
+  AC_SUBST([WITH_SCRUB_CONTROL])
+])
+AM_CONDITIONAL([WITH_SCRUB_CONTROL], [test x$enable_scrub_control = xyes || test x$enable_all = xyes])
+AM_COND_IF([WITH_SCRUB_CONTROL], [USE_SCRUB_CONTROL="yes"], [USE_SCRUB_CONTROL="no"])
+
 test "$sysconfdir" = '${prefix}/etc' && sysconfdir=/etc
 
 CFLAGS="$CFLAGS -Wall -Wmissing-prototypes -Wstrict-prototypes"
@@ -251,4 +261,5 @@ compile time options summary
     CPU fault isolation : $USE_CPU_FAULT_ISOLATION
     YITIAN RAS errors   : $USE_YITIAN_NS_DECODE
     JAGUAR RAS errors   : $USE_JAGUAR_NS_DECODE
+    Memory scrub control: $USE_SCRUB_CONTROL
 EOF
