@@ -295,6 +295,30 @@ static void page_record(struct page_record *pr, unsigned int count, time_t time)
 		pr->excess += pr->count;
 		pr->count = 0;
 		page_offline(pr);
+
+#ifdef HAVE_SCRUB_CONTROL
+	/* Start scrubbing for the memory range with faulty page */
+	struct mem_error_info err_info;
+	time_t now;
+
+	now = record->ts / user_hz + ras->uptime_diff;
+	localtime(&now);
+
+	err_info.time = now;
+	/**
+	 * Not sure how to get the memory range size and  type of
+	 * scrubber to be used corresponding to the  faulty page.
+	 * Does the scrub control code to communicate to the
+	 * scrub drivers in the kernel if supported to findout
+	 * the right scrub type, memory range to scrub for the
+	 * memory/memory range with the faulty page?
+	 */
+	err_info.scrub_type = UNKNOWN_SCRUB_TYPE;
+	err_info.address = pr->addr;
+	err_info.size = 0x100000;
+	err_info.enable_scrub = true;
+	ras_scrub_record_mem_error(&err_info);
+#endif
 	}
 }
 
