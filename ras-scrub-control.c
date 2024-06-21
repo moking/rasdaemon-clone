@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
@@ -36,9 +37,14 @@
 /* CXL patrol scrub definitions */
 #define INIT_OF_CXL_CE_THRESHOLD 20
 #define LIMIT_OF_CXL_CE_THRESHOLD 1000
-
 #define INIT_OF_CXL_SCRUB_CYCLE_IN_HOUR 10
 #define LIMIT_OF_CXL_SCRUB_CYCLE_IN_HOUR 48
+
+/* RAS2 patrol scrub definitions */
+#define INIT_OF_RAS2_CE_THRESHOLD 20
+#define LIMIT_OF_RAS2_CE_THRESHOLD 1000
+#define INIT_OF_RAS2_SCRUB_CYCLE_IN_HOUR 12
+#define LIMIT_OF_RAS2_SCRUB_CYCLE_IN_HOUR 48
 
 struct scrub_info {
 	char scrub_dir_name[128];
@@ -82,6 +88,30 @@ static const struct scrub_param cycle_units[] = {
 	{}
 };
 
+/* COMMON */
+static struct scrub_control_param cycle = {
+	.name = "SCRUB_ENABLE_CYCLE",
+	.units = cycle_units,
+	.value = SECOND_OF_DAY,
+	.limit = SECOND_OF_MON
+};
+
+static struct scrub_control_param default_scrub_type = {
+	.name = "RAS_DEFAULT_MEM_SCRUB_TYPE",
+	.units = normal_units,
+	.value = ACPI_RAS2_ON_DEMAND,
+	.limit = MAX_SCRUB_TYPE
+};
+
+static const char * const scrub_control_name[] = {
+	[UNKNOWN_SCRUB_TYPE] = "unknown",
+	[CXL_PATROL] = "cxl_mem",
+	[ACPI_RAS2_PATROL] = "acpi_ras2",
+	[ACPI_RAS2_ON_DEMAND] = "acpi_ras2",
+	[ACPI_ARS] = "acpi_ars",
+};
+
+/* CXL */
 static struct scrub_control_param cxl_ce_threshold = {
 	.name = "CXL_CE_THRESHOLD",
 	.units = normal_units,
@@ -96,11 +126,19 @@ static struct scrub_control_param cxl_scrub_cycle_in_hour = {
 	.limit = LIMIT_OF_CXL_SCRUB_CYCLE_IN_HOUR
 };
 
-static struct scrub_control_param cycle = {
-	.name = "SCRUB_ENABLE_CYCLE",
-	.units = cycle_units,
-	.value = SECOND_OF_DAY,
-	.limit = SECOND_OF_MON
+/* ACPI RAS2 */
+static struct scrub_control_param ras2_ce_threshold = {
+	.name = "RAS2_CE_THRESHOLD",
+	.units = normal_units,
+	.value = INIT_OF_RAS2_CE_THRESHOLD,
+	.limit = LIMIT_OF_RAS2_CE_THRESHOLD
+};
+
+static struct scrub_control_param ras2_scrub_cycle_in_hour = {
+	.name = "RAS2_SCRUB_CYCLE_IN_HOUR",
+	.units = normal_units,
+	.value = INIT_OF_RAS2_SCRUB_CYCLE_IN_HOUR,
+	.limit = LIMIT_OF_RAS2_SCRUB_CYCLE_IN_HOUR
 };
 
 static int open_sys_file(int __oflag, const char *format)
@@ -132,7 +170,7 @@ static int get_scrub_status(char *file_path)
 	if (fd == -1)
 		return SCRUB_UNKNOWN;
 
-	if (read(fd, buf, 1) <= 0 || sscanf(buf, "%d", &num) != 1)
+	if (read(fd, buf, 1) <= 0 || sscanf(buf, "%d", &num) < 1)
 		num = SCRUB_UNKNOWN;
 
 	close(fd);
@@ -348,9 +386,12 @@ void ras_scrub_control_init(void)
 	}
 
 	log(TERM, LOG_INFO, "Scrub control is enabled\n");
+	init_config(&cycle);
+	init_config(&default_scrub_type);
 	init_config(&cxl_ce_threshold);
 	init_config(&cxl_scrub_cycle_in_hour);
-	init_config(&cycle);
+	init_config(&ras2_ce_threshold);
+	init_config(&ras2_scrub_cycle_in_hour);
 }
 
 void ras_scrub_control_exit(void)
@@ -363,15 +404,181 @@ void ras_scrub_control_exit(void)
 	}
 }
 
+static int do_enable_bg_scrub(enum scrub_type scrub_type,
+			      unsigned int scrub_index, unsigned short enable)
+{
+	char buf[3] = "";
+	char *file_path;
+	int fd, rc;
+
+	scrub_infos[scrub_index].state = SCRUB_ENABLE_FAILED;
+	file_path = scrub_infos[scrub_index].scrub_enable_bg_path;
+	fd = open_sys_file(O_RDWR, file_path);
+	if (fd == -1)
+		return MEM_ERR_HANDLE_FAILED;
+
+	sprintf(buf, "%d", enable);
+	rc = write(fd, buf, strlen(buf));
+	if (rc < 0) {
+		log(TERM, LOG_ERR, "[%s] bg-scrub enable failed, errno:%d\n",
+		    scrub_infos[scrub_index].scrub_dir_name, errno);
+		close(fd);
+		return MEM_ERR_HANDLE_FAILED;
+	}
+	close(fd);
+
+	/* check wthether start/stop scrub successfully */
+	scrub_infos[scrub_index].state = get_scrub_status(file_path);
+	if (scrub_infos[scrub_index].state == enable)
+		return MEM_ERR_HANDLE_SUCCEED;
+	else
+		return MEM_ERR_HANDLE_FAILED;
+}
+
+static int do_enable_od_scrub(enum scrub_type scrub_type,
+			      unsigned int scrub_index, unsigned short enable)
+{
+	char buf[3] = "";
+	char *file_path;
+	int fd, rc;
+
+	scrub_infos[scrub_index].state = SCRUB_ENABLE_FAILED;
+	file_path = scrub_infos[scrub_index].scrub_enable_od_path;
+	fd = open_sys_file(O_RDWR, file_path);
+	if (fd == -1)
+		return MEM_ERR_HANDLE_FAILED;
+
+	sprintf(buf, "%d", enable);
+	rc = write(fd, buf, strlen(buf));
+	if (rc < 0) {
+		log(TERM, LOG_ERR, "[%s] od-scrub enable failed, errno:%d\n",
+		    scrub_infos[scrub_index].scrub_dir_name, errno);
+		close(fd);
+		return MEM_ERR_HANDLE_FAILED;
+	}
+	close(fd);
+
+	/* check wthether start/stop scrub successfully */
+	scrub_infos[scrub_index].state = get_scrub_status(file_path);
+	if (scrub_infos[scrub_index].state == enable)
+		return MEM_ERR_HANDLE_SUCCEED;
+	else
+		return MEM_ERR_HANDLE_FAILED;
+}
+
+static int do_set_scrub_addr_range(enum scrub_type scrub_type,
+		unsigned int scrub_index, unsigned long address,
+		unsigned long size)
+{
+	char range[16] = "";
+	unsigned long val;
+	char *file_path;
+	int fd, rc;
+
+	/* set base address */
+	file_path = scrub_infos[scrub_index].scrub_addr_range_base_path;
+	fd = open_sys_file(O_RDWR, file_path);
+	if (fd == -1)
+		return MEM_ERR_HANDLE_FAILED;
+
+	sprintf(range, "0x%lx", address);
+	rc = write(fd, range, strlen(range));
+	if (rc < 0) {
+		log(TERM, LOG_ERR, "set base addr [%s] failed, errno:%d\n",
+		    scrub_infos[scrub_index].scrub_dir_name, errno);
+		close(fd);
+		return MEM_ERR_HANDLE_FAILED;
+	}
+	/* read back base address and compare */
+	lseek(fd, 0, SEEK_SET);
+	memset(range, 0, strlen(range));
+	if ((read(fd, range, sizeof(range)) <= 0) ||
+	    (sscanf(range, "%lx", &val) < 1))
+		val = -1;
+	if (val != address) {
+		log(TERM, LOG_ERR, "set base addr [%s] failed, not matching\n",
+		    scrub_infos[scrub_index].scrub_dir_name);
+		close(fd);
+		return MEM_ERR_HANDLE_FAILED;
+	}
+	close(fd);
+
+	/* set base size */
+	file_path = scrub_infos[scrub_index].scrub_addr_range_size_path;
+	fd = open_sys_file(O_RDWR, file_path);
+	if (fd == -1)
+		return MEM_ERR_HANDLE_FAILED;
+
+	sprintf(range, "0x%lx", size);
+	rc = write(fd, range, strlen(range));
+	if (rc < 0) {
+		log(TERM, LOG_ERR, "set base size [%s] failed, errno:%d\n",
+		    scrub_infos[scrub_index].scrub_dir_name, errno);
+		close(fd);
+		return MEM_ERR_HANDLE_FAILED;
+	}
+	/* read back base size and compare */
+	lseek(fd, 0, SEEK_SET);
+	memset(range, 0, strlen(range));
+	if (read(fd, range, sizeof(val)) <= 0 ||
+	    (sscanf(range, "%lx", &val)) < 1)
+		val = -1;
+	if (val != size) {
+		log(TERM, LOG_ERR, "set base size [%s] failed, not matching\n",
+		    scrub_infos[scrub_index].scrub_dir_name);
+		close(fd);
+		return MEM_ERR_HANDLE_FAILED;
+	}
+	close(fd);
+
+	return MEM_ERR_HANDLE_SUCCEED;
+}
+
+static int do_set_scrub_rate(enum scrub_type scrub_type,
+			     unsigned int scrub_index,
+			     struct scrub_control_param *scrub_cycle)
+{
+	char cycle_in_hour[3] = "";
+	unsigned int val;
+	char *file_path;
+	int fd, rc;
+
+	file_path = scrub_infos[scrub_index].scrub_cycle_path;
+	fd = open_sys_file(O_RDWR, file_path);
+	if (fd == -1)
+		return MEM_ERR_HANDLE_FAILED;
+
+	sprintf(cycle_in_hour, "%d", (unsigned int)scrub_cycle->value);
+	rc = write(fd, cycle_in_hour, strlen(cycle_in_hour));
+	if (rc < 0) {
+		log(TERM, LOG_ERR, "set scrub rate [%s] failed, errno:%d\n",
+		    scrub_infos[scrub_index].scrub_dir_name, errno);
+		close(fd);
+		return MEM_ERR_HANDLE_FAILED;
+	}
+
+	/* read back scrub rate and compare */
+	lseek(fd, 0, SEEK_SET);
+	memset(cycle_in_hour, 0, strlen(cycle_in_hour));
+	if (read(fd, cycle_in_hour, sizeof(val)) <= 0 ||
+	    (sscanf(cycle_in_hour, "%x", &val)) < 1)
+		val = -1;
+	if (val != scrub_cycle->value) {
+		log(TERM, LOG_ERR, "set scrub rate [%s] failed, not matching\n",
+		    scrub_infos[scrub_index].scrub_dir_name);
+		close(fd);
+		return MEM_ERR_HANDLE_FAILED;
+	}
+	close(fd);
+
+	return 0;
+}
+
 static int do_enable_cxl_scrub(enum scrub_type scrub_type,
 			       unsigned int scrub_index)
 {
 	char *file_path;
-	char buf[2] = "";
-	char cycle_in_hour[3] = "";
-	int fd, rc;
-	unsigned int val;
-	int state;
+	int state, rc;
 
 	/* check wthether scrubbing is already enabled */
 	file_path = scrub_infos[scrub_index].scrub_enable_bg_path;
@@ -382,57 +589,62 @@ static int do_enable_cxl_scrub(enum scrub_type scrub_type,
 		return MEM_ERR_HANDLE_NOTHING;
 	}
 
-	/* set scrub rate */
-	file_path = scrub_infos[scrub_index].scrub_cycle_path;
-	fd = open_sys_file(O_RDWR, file_path);
-	if (fd == -1)
+	rc = do_set_scrub_rate(scrub_type, scrub_index, &cxl_scrub_cycle_in_hour);
+	if (rc)
 		return MEM_ERR_HANDLE_FAILED;
 
-	sprintf(cycle_in_hour, "%d", (unsigned int)cxl_scrub_cycle_in_hour.value);
-	rc = write(fd, cycle_in_hour, strlen(cycle_in_hour));
-	if (rc < 0) {
-		log(TERM, LOG_ERR, "set scrub rate [%s] failed, errno:%d\n",
-		    scrub_infos[scrub_index].scrub_dir_name, errno);
-		close(fd);
-		return MEM_ERR_HANDLE_FAILED;
-	}
-	/* read back scrub rate and compare */
-	memset(cycle_in_hour, 0, strlen(cycle_in_hour));
-	if (read(fd, cycle_in_hour, sizeof(val)) <= 0 ||
-	    (sscanf(cycle_in_hour, "%x", &val)) < 1)
-		val = -1;
-	if (val != cxl_scrub_cycle_in_hour.value) {
-		log(TERM, LOG_ERR, "set scrub rate [%s] failed, not matching\n",
-		    scrub_infos[scrub_index].scrub_dir_name);
-		close(fd);
-		return MEM_ERR_HANDLE_FAILED;
-	}
-	close(fd);
+	return do_enable_bg_scrub(scrub_type, scrub_index, SCRUB_ENABLE);
+}
 
-	/* enable scrubbing */
-	scrub_infos[scrub_index].state = SCRUB_ENABLE_FAILED;
+static int do_enable_ras2_bg_scrub(enum scrub_type scrub_type, unsigned int scrub_index)
+{
+	char *file_path;
+	int rc, state;
+
+	/* check wthether bg-scrub is already enabled */
 	file_path = scrub_infos[scrub_index].scrub_enable_bg_path;
-	fd = open_sys_file(O_RDWR, file_path);
-	if (fd == -1)
-		return MEM_ERR_HANDLE_FAILED;
-
-	strcpy(buf, "1");
-	rc = write(fd, buf, strlen(buf));
-	if (rc < 0) {
-		log(TERM, LOG_ERR, "[%s] scrub enable failed, errno:%d\n",
-		    scrub_infos[scrub_index].scrub_dir_name, errno);
-		close(fd);
-		return MEM_ERR_HANDLE_FAILED;
+	state = get_scrub_status(file_path);
+	if (state == SCRUB_ENABLE) {
+		log(TERM, LOG_INFO, "[%s] bg-scrub is already enabled\n",
+		    scrub_infos[scrub_index].scrub_dir_name);
+		return MEM_ERR_HANDLE_NOTHING;
 	}
-	close(fd);
 
-	/* check wthether scrubbing is enabled successfully */
-	scrub_infos[scrub_index].state = get_scrub_status(file_path);
+	rc = do_set_scrub_rate(scrub_type, scrub_index, &ras2_scrub_cycle_in_hour);
+	if (rc)
+		return MEM_ERR_HANDLE_FAILED;
 
-	if (scrub_infos[scrub_index].state == SCRUB_ENABLE)
-		return MEM_ERR_HANDLE_SUCCEED;
+	return do_enable_bg_scrub(scrub_type, scrub_index, SCRUB_ENABLE);
+}
 
-	return MEM_ERR_HANDLE_FAILED;
+static int do_enable_ras2_od_scrub(enum scrub_type scrub_type,
+	unsigned int scrub_index, unsigned long address,
+	unsigned long size)
+{
+	char *file_path;
+	int rc, state;
+
+	if (!address || !size)
+		return MEM_ERR_HANDLE_NOTHING;
+
+	/* check wthether on-demand scrubbing is already enabled */
+	file_path = scrub_infos[scrub_index].scrub_enable_od_path;
+	state = get_scrub_status(file_path);
+	if (state == SCRUB_ENABLE) {
+		log(TERM, LOG_INFO, "[%s] on-demand scrub is already enabled\n",
+		    scrub_infos[scrub_index].scrub_dir_name);
+		return MEM_ERR_HANDLE_NOTHING;
+	}
+
+	rc = do_set_scrub_addr_range(scrub_type, scrub_index, address, size);
+	if (rc)
+		return MEM_ERR_HANDLE_FAILED;
+
+	rc = do_set_scrub_rate(scrub_type, scrub_index, &ras2_scrub_cycle_in_hour);
+	if (rc)
+		return MEM_ERR_HANDLE_FAILED;
+
+	return do_enable_od_scrub(scrub_type, scrub_index, SCRUB_ENABLE);
 }
 
 static int do_ce_handler(enum scrub_type scrub_type, unsigned int scrub_index,
@@ -463,6 +675,8 @@ static int do_ce_handler(enum scrub_type scrub_type, unsigned int scrub_index,
 		switch (scrub_type) {
 		case CXL_PATROL:
 			return do_enable_cxl_scrub(scrub_type, scrub_index);
+		case ACPI_RAS2_PATROL:
+			return do_enable_ras2_bg_scrub(scrub_type, scrub_index);
 		default:
 			return MEM_ERR_HANDLE_NOTHING;
 		}
@@ -525,36 +739,51 @@ static void record_error_info(unsigned int scrub_index, struct mem_error_info *e
 
 void ras_scrub_record_mem_error(struct mem_error_info *err_info)
 {
-	int ret;
+	struct scrub_control_param *ce_threshold;
 	int scrub_index;
+	int rc;
 
 	if (enabled == 0)
 		return;
 
+	if (err_info->scrub_type == UNKNOWN_SCRUB_TYPE) {
+		err_info->scrub_type = default_scrub_type.value;
+		strcpy(err_info->dev_name, scrub_control_name[err_info->scrub_type]);
+	}
+
+	scrub_index = get_edac_scrubber(err_info->dev_name);
+	if (scrub_index < 0)
+		return;
+
 	switch (err_info->scrub_type) {
 	case CXL_PATROL:
-		scrub_index = get_edac_scrubber(err_info->dev_name);
-		if (scrub_index < 0)
+		ce_threshold = &cxl_ce_threshold;
+		break;
+	case ACPI_RAS2_ON_DEMAND:
+		if (err_info->enable_scrub) {
+			do_enable_ras2_od_scrub(err_info->scrub_type, scrub_index,
+						err_info->address, err_info->size);
 			return;
-
-		record_error_info(scrub_index, err_info);
-
-		ret = error_handler(CXL_PATROL, scrub_index, &cxl_ce_threshold,
-				    err_info);
-		if (ret == MEM_ERR_HANDLE_NOTHING)
-			log(TERM, LOG_INFO, "Do nothing, error threshod to enable %s scrub is not reached\n",
-			    scrub_infos[scrub_index].scrub_dir_name);
-		else if (ret == MEM_ERR_HANDLE_SUCCEED) {
-			log(TERM, LOG_INFO, "Enable %s scrub succeed\n",
-			    scrub_infos[scrub_index].scrub_dir_name);
-			clear_queue(scrub_infos[scrub_index].ce_queue);
-			scrub_infos[scrub_index].ce_nums = 0;
-			scrub_infos[scrub_index].uce_nums = 0;
-		} else
-			log(TERM, LOG_WARNING, "Enable %s scrub fail\n",
-			    scrub_infos[scrub_index].scrub_dir_name);
+		}
+		ce_threshold = &ras2_ce_threshold;
 		break;
 	default:
 		return;
 	}
+	record_error_info(scrub_index, err_info);
+
+	rc = error_handler(err_info->scrub_type, scrub_index, ce_threshold,
+			    err_info);
+	if (rc == MEM_ERR_HANDLE_NOTHING)
+		log(TERM, LOG_INFO, "Do nothing, error threshod to enable %s scrub is not reached\n",
+		    scrub_infos[scrub_index].scrub_dir_name);
+	else if (rc == MEM_ERR_HANDLE_SUCCEED) {
+		log(TERM, LOG_INFO, "Enable %s scrub succeed\n",
+		    scrub_infos[scrub_index].scrub_dir_name);
+		clear_queue(scrub_infos[scrub_index].ce_queue);
+		scrub_infos[scrub_index].ce_nums = 0;
+		scrub_infos[scrub_index].uce_nums = 0;
+	} else
+		log(TERM, LOG_WARNING, "Enable %s scrub fail\n",
+		    scrub_infos[scrub_index].scrub_dir_name);
 }

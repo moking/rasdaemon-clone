@@ -45,10 +45,12 @@ enum mem_error_handle_result {
 };
 
 enum scrub_type {
-	CXL_PATROL = 1,
-	ACPI_RAS2_PATROL = 2,
-	ACPI_RAS2_ON_DEMAND = 3,
-	ACPI_ARS = 4,
+	UNKNOWN_SCRUB_TYPE,
+	CXL_PATROL,
+	ACPI_RAS2_PATROL,
+	ACPI_RAS2_ON_DEMAND,
+	ACPI_ARS,
+	MAX_SCRUB_TYPE,
 };
 
 enum mem_error_severity {
@@ -62,6 +64,9 @@ struct mem_error_info {
 	enum scrub_type scrub_type;
 	char dev_name[MAX_BUF_LEN];
 	enum mem_error_severity err_severity;
+	bool enable_scrub;
+	unsigned long long address;
+	unsigned long long size;
 };
 
 void ras_scrub_control_init(void);
