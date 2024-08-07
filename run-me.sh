@@ -6,7 +6,7 @@ install_preps() {
         echo "Currently only distro based on debian release supported"
         exit 1
     fi
-    sudo apt-get install  make gcc autoconf automake libtool \
+    apt-get install  make gcc autoconf automake libtool \
         libtraceevent-dev tar dh-autoreconf
 }
 
