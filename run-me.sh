@@ -19,6 +19,11 @@ compile() {
     make
 }
 
+install() {
+    make install
+}
+
 install_preps
 configure
 compile
+install
