@@ -7,7 +7,7 @@ install_preps() {
         exit 1
     fi
     apt-get install -y make gcc autoconf automake libtool \
-        libtraceevent-dev tar dh-autoreconf
+        libtraceevent-dev tar dh-autoreconf libtracefs-dev
 }
 
 configure() {
